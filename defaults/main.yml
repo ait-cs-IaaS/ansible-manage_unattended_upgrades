@@ -1,0 +1,10 @@
+---
+# defaults file for manage_unattended_upgrades
+
+strategy:
+  wait: false
+  force: true
+
+unattended_upgrades:
+  stop: true
+  disable: true
