@@ -1,0 +1,109 @@
+---
+# tasks file for manage_unattended_upgrades
+
+
+# STRATEGY: WAIT
+# passively wait until the lockfiles are available before continuing the import_playbook.
+
+- name: Wait until the lock file is removed (Wait strategy)
+  wait_for:
+    path: "{{ lockfile }}"
+    state: absent
+  loop: 
+    - /var/lib/apt/lists/lock
+    - /var/cache/apt/archives/lock
+    - /var/lib/dpkg/lock
+    - /var/lib/dpkg/lock-frontend
+  loop_control:
+    loop_var: lockfile
+  when: strategy.wait
+
+
+# Manage unattended upgrade services
+
+- name: Stop unattended upgrade services
+  systemd:
+    name: "{{item}}"
+    state: stopped
+  become: yes
+  with_items:
+    - 'apt-daily'
+    - 'apt-daily.timer'
+    - 'apt-daily-upgrade'
+    - 'apt-daily-upgrade.timer'
+  when: unattended_upgrades.stop
+
+- name: "{{ 'Enable' if not unattended_upgrades.disable else 'Disable' }} unattended upgrade services"
+  systemd:
+    name: "{{item}}"
+    enabled: "{{ not unattended_upgrades.disable}}"
+    daemon_reload: yes
+  become: yes
+  with_items:
+    - 'apt-daily'
+    - 'apt-daily.timer'
+    - 'apt-daily-upgrade'
+    - 'apt-daily-upgrade.timer'
+
+
+# STRATEGY: FORCE
+# Kill all processes currently holding the lockfiles and remove lock files. 
+
+- name: Force kill processes and get lock (Force strategy)
+  block:
+    - name: Get running apt processes
+      ignore_errors: yes
+      shell: "ps aux | grep apt | awk '{print $2}'"
+      register: running_processes
+        
+    - name: Kill running apt processes
+      ignore_errors: yes
+      shell: "(kill {{ process }} 2>/dev/null) & wait $pid 2>/dev/null"
+      loop: 
+        - "{{ running_processes.stdout_lines }}"
+      loop_control:
+        loop_var: process
+      when: running_processes.stdout_lines | length > 0
+
+    - name: Get processes holding locks
+      ignore_errors: yes
+      shell: "lsof {{ process }} | awk '{print $2}' | tail -n 1"
+      register: running_processes
+      loop:
+        - /var/lib/dpkg/lock
+        - /var/lib/dpkg/lock-frontend
+      loop_control:
+        loop_var: process
+
+    - name: Get PIDs of locking processes
+      set_fact:
+        locking_processes: "{{ running_processes.results }}"
+
+    - name: Kill locking processes
+      ignore_errors: yes
+      shell: "(kill {{ process }} 2>/dev/null) & wait $pid 2>/dev/null"
+      loop: 
+        - "{{ locking_processes.0.stdout_lines }}"
+        - "{{ locking_processes.1.stdout_lines }}"
+      loop_control:
+        loop_var: process
+      when: locking_processes.0.stdout_lines | length > 0 and locking_processes.1.stdout_lines | length > 0
+
+    - name: Remove locks
+      file:
+        path: "{{ lockfile }}"
+        state: absent
+      loop:
+        - /var/lib/apt/lists/lock
+        - /var/cache/apt/archives/lock
+        - /var/lib/dpkg/lock
+        - /var/lib/dpkg/lock-frontend
+      loop_control:
+        loop_var: lockfile
+      when: locking_processes.0.stdout_lines | length > 0 and locking_processes.1.stdout_lines | length > 0
+
+    - name: Reconfigure the packages
+      shell: dpkg --configure -a
+      become: yes
+  when: strategy.force
+  become: yes
