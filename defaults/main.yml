@@ -1,6 +1,4 @@
 ---
-# defaults file for manage_unattended_upgrades
-
 strategy:
   wait: false
   force: true
